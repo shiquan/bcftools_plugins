@@ -1,6 +1,7 @@
 Plugins:
+========
 
-addadr -- add ADR (Allele Depth Ratio) tag in your VCF files
+**addadr** -- add ADR (Allele Depth Ratio) tag in your VCF files
 
 ADR = (float)AD/DP
 
