@@ -1,11 +1,17 @@
 Plugins:
 ========
 
-**addadr** -- add ADR (Allele Depth Ratio) tag in your VCF files
+addadr
+------
+add ADR (Allele Depth Ratio) tag in your VCF files
 
 ADR = (float)AD/DP
 
 
+
+
+How to Compile:
+===============
 To compile these plugins:
 
    download the lastest bcftools
