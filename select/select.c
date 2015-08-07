@@ -35,6 +35,7 @@
 #include <htslib/vcf.h>
 #include <htslib/synced_bcf_reader.h>
 #include <ctype.h>
+#include "bcftools.h"
 
 #define SPLIT_NONE    1          //  bcftools query mode, one bcf1_t per line
 #define SPLIT_TAG     0
@@ -42,8 +43,8 @@
 #define SPLIT_ALT     4          //  flag for split by allele, each alt per line
 #define SPLIT_GT      2          //  flag for split by genotype (0/0, 0/1, 1/1), it's same with split by samples ^ SPLIT_ALT
 #define SPLIT_TRANS    (1<<4)    //  flag for split by TRANS name, if use this flag any tags related with transcripts should be split 
-#define SPLIT_DEFAULT (SPLIT_ALT | SPLIT_SAMPLE & SPLIT_TAG)
-#define SPLIT_ALL     (SPLIT_SAMPLE | SPLIT_ALT | SPLIT_TRANS & SPLIT_TAG)
+#define SPLIT_DEFAULT ( SPLIT_ALT | SPLIT_SAMPLE )
+#define SPLIT_ALL     ( SPLIT_SAMPLE | SPLIT_ALT | SPLIT_TRANS )
 
 #define IS_SEP    1
 #define IS_FIX    1
@@ -71,18 +72,12 @@
 #define S_FIRST_ALT 16
 #define S_TRANS      17
 
-#define M_SKIP      -1
-#define M_UPSTAIR   -2 
-
 #define MEMPOOL     2621440
 
 /* split flag */
 static int split_flag = SPLIT_DEFAULT;
 
 bcf_hdr_t * header;
-
-// transcripts number of each line, only used to split by trans
-static int ntrans = 1;
 
 /* the fmt_t and convert_t are adapted from pd3's convert.c 
  * if we want export the sample info and allele info per line
@@ -110,32 +105,21 @@ struct _convert
 
 typedef struct
 {
-//    int ala;
     int type;
-    int m; // usually m=1
-    char **a;
+    int m;    // the array size of a[], usually $m==1
+    char **a; 
 }
 mval_t;
 
 struct _tags
 {
-    int n, m;
+    int n, m; // n : fields , m : genotypesn*samples
     int k, l; // the sizes of matrix
     mval_t **trans;
 };
 
 static int skip_ref = 0;
 static int print_header = 0;
-
-void error(const char *format, ...)
-{
-    va_list ap;
-    va_start(ap, format);
-    vfprintf(stderr, format, ap);
-    va_end(ap);
-    exit(-1);
-}
-
 void clear_tag(tags_t *t)
 {
     int i, j, k;
@@ -227,6 +211,7 @@ void init_tags(tags_t *t, bcf1_t *line)
     t->l = split_flag & SPLIT_ALT ? line->n_allele : 1;
     if ( split_flag & SPLIT_SAMPLE ) t->l *= header->n[BCF_DT_SAMPLE];
     t->k = convert->mfmt;
+    fprintf(stderr,"[DEBUG] l: %d, k: %d\n", t->l, t->k);
     t->trans = (mval_t**)calloc(t->l, sizeof(mval_t*));
     for (i=0; i<t->l; ++i)
     {
@@ -245,7 +230,7 @@ int convert_line(bcf1_t *line, kstring_t *str)
 {
     int l_ori = str->l;
     bcf_unpack(line, convert->max_unpack);
-    int i, k;
+    int i, k=0;
     tags_t tag = { 0, 0, 0};
     init_tags(&tag, line);
     int isample=-1, nsample=0;
@@ -503,35 +488,50 @@ static void process_sep(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t 
 fmt_t *register_tag(int type, char *key, int is_gtf)
 {
     convert->nfmt++;
-    hts_expand(fmt_t, convert->mfmt, convert->nfmt, convert->fmt);
+    if (convert->nfmt == convert->mfmt)
+    {
+	convert->mfmt += 10;
+	convert->fmt = (fmt_t*)realloc(convert->fmt, convert->mfmt*sizeof(fmt_t));
+    }
     fmt_t *fmt = &convert->fmt[ convert->nfmt-1 ];
     fmt->type = type;
     fmt->is_gtf = is_gtf;
-    fmt->key = key ? strdup(key) : NULL;
-    fmt->id = bcf_hdr_id2int(header, BCF_DT_ID, fmt->key);
-    if ( fmt->id==-1 ) error("Error: no such tag defined in the VCF header: FORMAT/%s\n", fmt->key);
-    
-    if ( key )
+    if ( key == NULL ) error("BUGS: empty key\n");
+     fmt->key = strdup(key);
+    if (fmt->type == S_SEP)
     {
-	int id = bcf_hdr_id2int(header, BCF_DT_ID, key);
-	if ( !fmt->is_gtf && !bcf_hdr_idinfo_exists(header, BCF_HL_FMT, id))
+	fmt->id = -1;
+    }
+    else
+    {
+	fmt->id = bcf_hdr_id2int(header, BCF_DT_ID, fmt->key);
+	if ( fmt->id == -1 && !fmt->is_gtf)
 	{
 	    if ( !strcmp("CHROM", key) ) fmt->type = S_CHROM;
 	    else if ( !strcmp("POS", key) ) fmt->type = S_POS;
 	    else if ( !strcmp("BED", key) ) fmt->type = S_BED;
-	    else if ( !strcmp("HGVS", key) ) fmt->type = S_TRANS;
 	    else if ( !strcmp("ID", key) ) fmt->type = S_ID;
 	    else if ( !strcmp("REF", key) ) fmt->type = S_REF;
 	    else if ( !strcmp("ALT", key) ) fmt->type = S_ALT;
 	    else if ( !strcmp("FIRST_ALT", key) ) fmt->type = S_FIRST_ALT;
 	    else if ( !strcmp("QUAL", key) ) fmt->type = S_QUAL;
 	    else if ( !strcmp("FILTER", key) ) fmt->type = S_FILTER;
-	    else if ( id >= 0 && bcf_hdr_idinfo_exists(header, BCF_HL_INFO, id) )
+	    else if ( !strcmp("SAMPLE", key) ) fmt->type = S_SAMPLE;
+	    else  error("No such tag in the header %d\n", key);
+    	}
+	else
+	{
+	    if ( !strcmp("HGVS", key) ) fmt->type = S_TRANS;
+	    else if ( !strcmp("SAMPLE", key) ) fmt->type = S_SAMPLE;
+	    else if ( fmt->id >= 0 && bcf_hdr_idinfo_exists(header, BCF_HL_INFO, fmt->id) )
 	    {
-		fmt->type = S_INFO;
-		fprintf(stderr, "Warning: Assuming INFO %s\n", key);
+    		fmt->type = S_INFO;
+    		fprintf(stderr, "Warning: Assuming INFO %s\n", key);
+    	    }
+	    else
+	    {
+		fmt->type = S_FORMAT;
 	    }
-	    
 	}
     }
     switch ( fmt->type )
@@ -553,20 +553,20 @@ fmt_t *register_tag(int type, char *key, int is_gtf)
     case S_TGT: fmt->handler = &process_tgt; convert->max_unpack |= BCF_UN_FMT; break;
     default: error("TODO: handler for type %d\n", fmt->type);
     }
-    if ( key )
-    {
-	if ( fmt->type==S_INFO )
-	{
-	    fmt->id = bcf_hdr_id2int(header, BCF_DT_ID, key);
-	    if ( fmt->id==-1 ) error("Error: no such tag defined in the VCF header: INFO/%s\n", key);
-	}
-    }
+    /* if ( key ) */
+    /* { */
+    /* 	if ( fmt->type==S_INFO ) */
+    /* 	{ */
+    /* 	    fmt->id = bcf_hdr_id2int(header, BCF_DT_ID, key); */
+    /* 	    if ( fmt->id==-1 ) error("Error: no such tag defined in the VCF header: INFO/%s\n", key); */
+    /* 	} */
+    /* } */
     return fmt;
 }
 static char *parse_tag(char *p, int is_gtf)
 {
     char *q = ++p;
-    while ( *q && (isalnum(*q) || *q=='_' || *q=='.') ) q++;
+    while ( *q && (isalnum(*q) || *q=='_' || *q=='.')) q++;
     kstring_t str = { 0, 0, 0};
     if ( q-p==0 ) error("Could not parse format string: %s\n", convert->format_str);
     kputsn(p, q-p, &str);
@@ -574,7 +574,7 @@ static char *parse_tag(char *p, int is_gtf)
     {
 	if ( !strcmp(str.s, "SAMPLE") )
 	{
-	    if ( split_flag ^ SPLIT_SAMPLE ) register_tag(S_SAMPLE, "SAMPLE", is_gtf);
+	    if ( !(split_flag & SPLIT_SAMPLE) ) register_tag(S_SAMPLE, "SAMPLE", is_gtf);
 	    else error("SAMPLE tag should be defined in FMT region, if split by samples");
 	}
 	else if ( !strcmp(str.s, "GT") || !strcmp(str.s, "TGT")) register_tag(S_TGT, "GT", is_gtf);
@@ -640,14 +640,18 @@ void convert_init(char *s)
 {
     convert = (convert_t*)malloc(sizeof(convert_t));
     convert->format_str = strdup(s);
-    int is_gtf = 0, in = 0;
+    convert->nfmt = 0;
+    convert->mfmt = 2;
+    convert->fmt = (fmt_t*)calloc(convert->mfmt, sizeof(fmt_t)); 
+    convert->max_unpack = 0;
+    int is_gtf = 0;
     char *p = convert->format_str;
     while ( *p )
     {
 	switch (*p)
 	{
-	    case '[': is_gtf = 1; p++; in = 1; break;
-	    case ']': is_gtf = 0; in = 0; register_tag(IS_SEP, NULL, 0); p++; break;
+	    case '[': is_gtf = 1; p++; break;
+	    case ']': is_gtf = 0; p++; break;
 	    case '%': p = parse_tag(p, is_gtf); break;
 	    default:  p = parse_sep(p, is_gtf); break;
 	}
@@ -696,16 +700,17 @@ int init(int argc, char **argv, bcf_hdr_t *in, bcf_hdr_t *out)
 	{
 	case 'f': format = strdup(optarg); break;
 	case 'r': skip_ref = 1; break;
-	    case 's': split_flag = init_split_flag(optarg); break;
+	case 's': split_flag = init_split_flag(optarg); break;
 	case 'h':
 	case '?':
 	default: fprintf(stderr, "%s", usage()); break;
 	}
     }
+    header = in;
     convert_init(format);
+    free(format);
     mempool = (kstring_t*)malloc(sizeof(kstring_t));
     mempool->m = mempool->l = 0;
-    header = in;
     print_header = 1;
     return 0;
 }
@@ -726,6 +731,6 @@ void destroy(void)
 
 int main(int argc, char **argv)
 {
-    return 0;
+    return run(argc, argv);
 }
 #endif
