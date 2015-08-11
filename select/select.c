@@ -25,6 +25,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <unistd.h>
 #include <getopt.h>
 #include <string.h>
 #include <errno.h>
@@ -35,7 +36,7 @@
 #include <htslib/vcf.h>
 #include <htslib/synced_bcf_reader.h>
 #include <ctype.h>
-#include "bcftools.h"
+//#include "bcftools.h"
 
 #define SPLIT_NONE    1          //  bcftools query mode, one bcf1_t per line
 #define SPLIT_TAG     0
@@ -46,33 +47,34 @@
 #define SPLIT_DEFAULT 0
 #define SPLIT_ALL     ( SPLIT_SAMPLE | SPLIT_ALT | SPLIT_TRANS )
 
-#define IS_SEP    1
-#define IS_FIX    1
-#define IS_SAM    2
-#define IS_ALT    4
-#define IS_GT     (1<<3)
-#define IS_TRANS   (1<<4)
-
 #define S_CHROM     1
 #define S_POS       2
-#define S_ID        3
-#define S_REF       4
-#define S_ALT       5
-#define S_BED       6 // %BED is only used with type & SPLIT_ALT , bed calculated from ref and alt position
-#define S_QUAL      7
-#define S_FILTER    8
-#define S_INFO      9
-#define S_FORMAT    10
-#define S_SAMPLE    11
-#define S_SEP       12
-#define S_TYPE      13
-#define S_GT        14 // GT is useless for us, export TGT directly
-#define S_TGT       14
-#define S_IUPAC_GT  15
-#define S_FIRST_ALT 16
-#define S_TRANS      17
+#define S_ID        4
+#define S_REF       8
+#define S_ALT       16
+#define S_BED       32
+#define S_QUAL      64
+#define S_FILTER    128
+#define S_INFO      256
+#define S_FORMAT    513
+#define S_SAMPLE    1024
+#define S_SEP       2048
+#define S_TYPE      4096
+#define S_GT        8192
+#define S_TGT       8192
+#define S_IUPAC_GT  16384
+#define S_FIRST_ALT 32768
+#define S_TRANS     65536
+
+#define IS_SEP    (S_SEP)
+#define IS_SAM    (S_SAMPLE)
+#define IS_ALT    (S_BED | S_ALT | S_INFO | S_FORMAT | S_TRANS)
+#define IS_GT     (S_GT | S_TGT | S_IUPAC_GT)
+#define IS_TRANS  (S_TRANS)
 
 #define MEMPOOL     2621440
+
+static void error(const char *format, ...);
 
 /* split flag */
 static int split_flag = SPLIT_DEFAULT;
@@ -107,7 +109,7 @@ typedef struct
 {
     int type;
     int m, n;    // the array size of a[], usually $m==1
-    char **a; 
+    kstring_t *a; 
 }
 mval_t;
 
@@ -118,50 +120,72 @@ struct _tags
     mval_t **trans;
 };
 
+static tags_t *tag;
 static int skip_ref = 0;
 static int print_header = 0;
 void clear_tag(tags_t *t)
 {
     int i, j, k;
-    for (i=0; i<t->n; ++i)
+    for (i=0; i<=t->m; ++i)
     {
-	for (j=0; j<t->m; ++j)
+	for (j=0; j<=t->n; ++j)
 	{
-	    for (k=0; k < t->trans[i][j].m; ++k) free(t->trans[i][j].a[k]);
+	    for (k=0; k < t->trans[i][j].m; ++k)
+	    {
+		t->trans[i][j].a[k].l = 0;
+	    }
+	    t->trans[i][j].m = 0;
+	}
+    }
+    t->m = 0;
+    t->n = 0;
+}
+void destroy_tag(tags_t * t)
+{
+    int i, j, k;
+    for (i=0; i<=t->n; ++i)
+    {
+	for (j=0; j<=t->m; ++j)
+	{
+	    for (k=0; k < t->trans[i][j].m; ++k)
+	    {
+		if (t->trans[i][j].a[k].m) free(t->trans[i][j].a[k].s);
+	    }
+	    if (t->trans[i][j].n) free(t->trans[i][j].a);
 	}
 	free(t->trans[i]);
     }
     free(t->trans);
+    free(t);
 }
-int tags2str(tags_t *t, kstring_t *s)
+int tags2str(tags_t * const t, kstring_t *s)
 {
     int i, j, k, d;
     int l_ori = s->l;
-    for (i=0; i<t->n; ++i) // allele
+    for (i=0; i<=t->m; ++i) // allele
     {
 	d=1; k=0;
 	for (; k<d;k++) // trans
 	{
-	    for (j=0; j<t->m; ++j) // rows
+	    for (j=0; j<=t->n; ++j) // rows
 	    {
-		mval_t f= t->trans[i][j];
-		
-		if ((f.type & IS_TRANS) && f.m > 1)
+		mval_t *f= &t->trans[i][j];
+
+		if ((f->type & IS_TRANS) && f->m > 1)
 		{
-		    if (d != 1 && d != f.m) error("ERROR: TRANS tags have different transcripts!\n");
-		    d=f.m;
+		    if (d != 1 && d != f->m) error("ERROR: TRANS tags have different transcripts!\n");
+		    d=f->m;
 		}
-		if (f.type & IS_TRANS)
+		if (f->type & IS_TRANS)
 		{
-		    kputs(f.a[k], s);
+		    kputs(f->a[k].s, s);
 		}
 		else
 		{
-		    fprintf(stderr, "%s\n", f.a[0]);
-		    kputs(f.a[0], s);
+		    kputs(f->a[0].s, s);
 		}
 	    }
-	    kputc('\n', s);
+	    //   kputc('\n', s);
 	}
     }
     return s->l -l_ori;
@@ -173,13 +197,12 @@ int convert_header(kstring_t *str)
 {
     int l_ori = str->l;
     int i;
-    str->l=0;
     for ( i=0; i<convert->nfmt; ++i )
     {
 	if ( convert->fmt[i].is_gtf && !(split_flag & SPLIT_SAMPLE ))
 	{
 	    int j = i, js, k;
-	    while ( convert->fmt[j].is_gtf ) j++;
+	    while ( j<convert->nfmt && convert->fmt[j].is_gtf ) j++;
 	    for ( js = 0; js < bcf_hdr_nsamples(header); ++js )
 	    {
 		for ( k=i; k<j; ++k )
@@ -197,52 +220,59 @@ int convert_header(kstring_t *str)
 	}
 	if ( convert->fmt[i].type & IS_SAM ) {
 	    if ( !(split_flag & SPLIT_SAMPLE) ) error("split tag has inconsistent format\n");
-	    //if ( nsam > 1 ) error("more than 1 sample name field\n");
-	    //else nsam++;
 	    kputs("SAMPLE", str);
 	    continue;
 	}
 	// Fixed fields
 	if ( convert->fmt[i].key ) kputs(convert->fmt[i].key, str);
-    }    
+    }
     return str->l - l_ori;
 }
-void init_tags(tags_t *t, bcf1_t *line)
+void init_tags(tags_t *t, bcf1_t *const line)
 {
     int i, j;
-    t->l = split_flag & SPLIT_ALT ? line->n_allele : 1;
-    if ( split_flag & SPLIT_SAMPLE ) t->l *= header->n[BCF_DT_SAMPLE];
-    t->k = convert->nfmt;
-    t->trans = (mval_t**)calloc(t->l, sizeof(mval_t*));
-    for (i=0; i<t->l; ++i)
+    int mrow;
+    mrow = split_flag & SPLIT_ALT ? line->n_allele : 1;
+    if ( split_flag & SPLIT_SAMPLE ) mrow *= header->n[BCF_DT_SAMPLE];
+    if (t->k == 0) t->k = convert->nfmt;
+    if ( t->l < mrow )
     {
-	t->trans[i] = (mval_t*)calloc(t->k, sizeof(mval_t));
-	for (j=0; j<t->k; ++j)
+	if (t->l == 0) 	t->trans = (mval_t**)malloc(mrow*sizeof(mval_t*));
+	else 
+	    t->trans = (mval_t**)realloc(t->trans, mrow*sizeof(mval_t*));
+	for (i=t->l; i <mrow; ++i)
 	{
-	    t->trans[i][j].m = 0;
-	    t->trans[i][j].n = 1;
-	    t->trans[i][j].type = 0;
-	    t->trans[i][j].a = (char**)calloc(t->trans[i][j].n, sizeof(char*));
+	    t->trans[i] = (mval_t*)calloc(t->k, sizeof(mval_t));
+	    for (j=0; j<t->k; ++j)
+	    {
+		t->trans[i][j].m = 0;
+		t->trans[i][j].n = 1;
+		t->trans[i][j].type = 0;
+		t->trans[i][j].a = (kstring_t*)calloc(t->trans[i][j].n, sizeof(kstring_t));
+	    }
 	}
+	t->l = mrow;
     }
     for (i=0; i<convert->nfmt; ++i)
     {
-	if (convert->fmt[i].id == -1) continue;
-	for (j=0; j<(int)line->n_fmt; j++)
-	{
-	    if ( line->d.fmt[j].id==convert->fmt[i].id ) { convert->fmt[i].fmt = &line->d.fmt[j]; break; }
-	}
+    	if (convert->fmt[i].id == -1) continue;
+    	for (j=0; j<(int)line->n_fmt; j++)
+    	{
+    	    if ( line->d.fmt[j].id==convert->fmt[i].id ) { convert->fmt[i].fmt = &line->d.fmt[j]; break; }
+    	}
     }
+    t->m = t->n = -1;
 }
 int convert_line(bcf1_t *line, kstring_t *str)
 {
     int l_ori = str->l;
     bcf_unpack(line, convert->max_unpack);
     int i, k=0;
-    tags_t tag = { 0, 0, 0};
-    init_tags(&tag, line);
+    //tags_t tag = { 0, 0, 0};
+    init_tags(tag, line);
     int isample=-1, nsample=0;
     int row = 0;
+
     if ( split_flag & SPLIT_SAMPLE )
     {
 	isample = 0;
@@ -251,14 +281,14 @@ int convert_line(bcf1_t *line, kstring_t *str)
     for ( ; isample<nsample; ++isample )
     {
 	int iala=-1;
+	int lala=iala;
 	if ( split_flag & SPLIT_ALT )
 	{
 	    bcf_fmt_t *fgt = bcf_get_fmt(header, line, "GT");
 #define BRANCH(type_t, vector_end) do {					\
 		type_t *ptr = (type_t*) (fgt->p + isample*fgt->size);	\
-		iala = ptr[k]&1;					\
+		iala = (ptr[k]>>1)-1;					\
 	    } while(0)
-	    fprintf(stderr, "geno: %d\n", fgt->n);
 	    for ( k=0; k<fgt->n; ++k)
 	    {
 		switch (fgt->type) {
@@ -267,32 +297,34 @@ int convert_line(bcf1_t *line, kstring_t *str)
 		    case BCF_BT_INT32: BRANCH(int32_t, bcf_int32_vector_end); break;
 		    default: fprintf(stderr, "FIXME: type %d in bcf_format_gt?\n", fgt->type); abort(); break;
 		}
-		if ( skip_ref && !iala ) continue;
-		tag.m = row++;
+		if (iala != -1)
+		{
+		    if (lala == iala) continue;
+		    lala = iala;
+		}
+		if ( skip_ref && iala==0) continue;
+		tag->m = row++;
 		for ( i=0; i<convert->nfmt; i++ )
 		{
-		    tag.n = i;
-		    fprintf(stderr,"m: %d\tn:%d\tl:%d\tk:%d\n",tag.m, tag.n, tag.l, tag.k);
-		    if ( convert->fmt[i].handler ) convert->fmt[i].handler(line, &convert->fmt[i], iala, isample, &tag);
-		    //fprintf(stderr, "key: %s id:%d\n", tag.trans[k][i].a[0], convert->fmt[i].id);
+		    tag->n = i;
+		    if ( convert->fmt[i].handler ) convert->fmt[i].handler(line, &convert->fmt[i], iala, isample, tag);
+
 		}
 	    }
 #undef BRANCH
 	}
 	else
 	{
-	    tag.m = row++;	    
+	    tag->m = row++;	    
 	    for ( i=0; i<convert->nfmt; i++ )
 	    {
-		tag.n = i;
-		//fprintf(stderr,"m: %d\tn:%d\tl:%d\tk:%d\n",tag.m, tag.n, tag.l, tag.k);
-		if ( convert->fmt[i].handler ) convert->fmt[i].handler(line, &convert->fmt[i], iala, isample, &tag);
+		tag->n = i;
+		if ( convert->fmt[i].handler ) convert->fmt[i].handler(line, &convert->fmt[i], iala, isample, tag);
 	    }
 	}
     }
-    tags2str(&tag, str);
-    //fprintf(stderr, "l: %d\tm: %d\t%s\n", str->l, str->m, str->s);
-    clear_tag(&tag);
+    if (tag->m != -1 && tag->n != -1) tags2str(tag, str);
+    clear_tag(tag);
     return str->l - l_ori;
 }
 
@@ -325,136 +357,132 @@ int init_split_flag(char *s)
 }
 static void process_first_alt(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
-    kstring_t str = { 0, 0, 0 };
+    //kstring_t str = { 0, 0, 0 };
     mval_t *pv= &tag->trans[tag->m][tag->n];
     pv->type = fmt->type;
-    if ( line->n_allele == 1 ) kputc('.', &str);
-    else kputs(line->d.allele[1], &str);
+    if ( line->n_allele == 1 ) kputc('.', &pv->a[pv->m++]);
+    else kputs(line->d.allele[1],  &pv->a[pv->m++]);
     if (pv->n == pv->m)
     {
 	pv->n+= 2;
-	pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
-    pv->a[pv->m++] = str.s;
-
 }
 static void process_chrom(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
-    kstring_t str = { 0, 0, 0 };
-    kputs(header->id[BCF_DT_CTG][line->rid].key, &str);
     mval_t *pv= &tag->trans[tag->m][tag->n];
+    kputs(header->id[BCF_DT_CTG][line->rid].key, &pv->a[pv->m++]);
     pv->type = fmt->type;
     if (pv->n == pv->m)
     {
 	pv->n+= 2;
-	pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
-    pv->a[pv->m++] = str.s;
 
 }
 static void process_pos(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
-    kstring_t str = { 0, 0, 0 };
-    kputw(line->pos+1, &str);
     mval_t *pv = &tag->trans[tag->m][tag->n];
+    kputw(line->pos+1, &pv->a[pv->m++]);
     pv->type = fmt->type;
     if (pv->n == pv->m)
     {
 	pv->n+= 2;
-	pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
-    pv->a[pv->m++] = str.s;
 }
 static void process_bed(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
-    
+    mval_t *pv = &tag->trans[tag->m][tag->n];
+    pv->type = fmt->type;
+    uint32_t end = line->pos + strlen(line->d.allele[0]);
+    kputs(header->id[BCF_DT_CTG][line->rid].key, &pv->a[pv->m]);
+    kputc('\t', &pv->a[pv->m]);
+    kputw(line->pos, &pv->a[pv->m]);
+    kputc('\t', &pv->a[pv->m]);
+    kputw(end, &pv->a[pv->m]);
+    pv->m++;
+    if (pv->n == pv->m)
+    {
+	pv->n+= 2;
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
+    }
 }
 static void process_ref(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
-    kstring_t str = { 0, 0, 0 };
-    kputs(line->d.allele[0], &str);
     mval_t *pv= &tag->trans[tag->m][tag->n];
+    kputs(line->d.allele[0], &pv->a[pv->m++]);
     pv->type = fmt->type;
     if (pv->n == pv->m)
     {
 	pv->n+= 2;
-	pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
-    pv->a[pv->m++] = str.s;
-
 }
 static void process_id(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
 }
 static void process_alt(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
-    kstring_t str = { 0, 0, 0 };
     mval_t *pv= &tag->trans[tag->m][tag->n];
     pv->type = fmt->type;
-    if ( line->n_allele == 1 ) kputc('.', &str);
+    if ( line->n_allele == 1 ) kputc('.', &pv->a[pv->m]);
     else if ( iala == -1 )
     {
 	int i;
 	for (i=1; i<line->n_allele; ++i)
 	{
-	    if ( i>1 ) kputc(',', &str);
-	    kputs(line->d.allele[i], &str);
+	    if ( i>1 ) kputc(',', &pv->a[pv->m]);
+	    kputs(line->d.allele[i], &pv->a[pv->m]);
 	}
     }
-    else kputs(line->d.allele[iala], &str);
+    else kputs(line->d.allele[iala], &pv->a[pv->m]);
+    pv->m++;
     if (pv->n == pv->m)
     {
 	pv->n+= 2;
-	pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
-    pv->a[pv->m++] = str.s;
-
 }
 static void process_qual(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
-    kstring_t str = { 0, 0, 0 };
-    if ( bcf_float_is_missing(line->qual) ) kputc('.', &str);
-    else ksprintf(&str, "%g", line->qual);
     mval_t *pv= &tag->trans[tag->m][tag->n];
+    if ( bcf_float_is_missing(line->qual) ) kputc('.', &pv->a[pv->m]);
+    else ksprintf(&pv->a[pv->m], "%g", line->qual);
+    pv->m++;
     pv->type = fmt->type;
-        if (pv->n == pv->m)
+    if (pv->n == pv->m)
     {
 	pv->n+= 2;
-	pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
-    pv->a[pv->m++] = str.s;
-
 }
 static void process_filter(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
-    kstring_t str = { 0, 0, 0 };
+    mval_t *pv= &tag->trans[tag->m][tag->n];
     int i;
     if ( line->d.n_flt )
     {
 	for (i=0; i<line->d.n_flt; i++)
 	{
-	    if (i) kputc(';', &str);
-	    kputs(header->id[BCF_DT_ID][line->d.flt[i]].key, &str);
+	    if (i) kputc(';', &pv->a[pv->m]);
+	    kputs(header->id[BCF_DT_ID][line->d.flt[i]].key, &pv->a[pv->m]);
 	}
     }
-    else kputc('.', &str);
-    
-    mval_t *pv= &tag->trans[tag->m][tag->n];
+    else kputc('.', &pv->a[pv->m]);
+    pv->m++;
     pv->type = fmt->type;
-        if (pv->n == pv->m)
+    if (pv->n == pv->m)
     {
 	pv->n+= 2;
-	pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
-    pv->a[pv->m++] = str.s;
-
-    
 }
 static void process_tgt(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
     if (iala != -1 ) error("%TGT only used with SPLIT_GT \n");
-    kstring_t str = { 0, 0, 0 };
-    if ( fmt->fmt==NULL ) kputc('.', &str);
+    mval_t *pv= &tag->trans[tag->m][tag->n];
+    if ( fmt->fmt==NULL ) kputc('.', &pv->a[pv->m]);
     else
     {
 	assert(fmt->fmt->type==BCF_BT_INT8);
@@ -462,28 +490,25 @@ static void process_tgt(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t 
 	int8_t *x = (int8_t*)(fmt->fmt->p + isample*fmt->fmt->size);
 	for (l=0; l<fmt->fmt->n && x[l]!=bcf_int8_vector_end; ++l)
 	{
-	    if (l) kputc("/|"[x[l]>>1], &str);
-	    if (x[l]>>1) kputs(line->d.allele[(x[l]>>1)-1], &str);
-	    else kputc('.', &str);
+	    if (l) kputc("/|"[x[l]&1], &pv->a[pv->m]);
+	    if (x[l]>>1) kputs(line->d.allele[(x[l]>>1)-1], &pv->a[pv->m]);
+	    else kputc('.', &pv->a[pv->m]);
 	}
-	if (l==0) kputc('.', &str);
+	if (l==0) kputc('.', &pv->a[pv->m]);
     }
-    mval_t *pv= &tag->trans[tag->m][tag->n];
+    pv->m++;
     pv->type = fmt->type;
     if (pv->n == pv->m)
     {
 	pv->n+= 2;
-	pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
-    pv->a[pv->m++] = str.s;
-
 }
 static void process_trans(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
 }
 static void process_info(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
-    kstring_t str = { 0, 0, 0 };
     mval_t *pv= &tag->trans[tag->m][tag->n];
     pv->type = fmt->type;
     int i;
@@ -491,28 +516,25 @@ static void process_info(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t
 	if ( line->d.info[i].key == fmt->id ) break;
     if ( i==line->n_info )
     {
-	kputc('.', &str);
+	kputc('.', &pv->a[pv->m++]);
 	if (pv->n == pv->m)
 	{
 	    pv->n+= 2;
-	    pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	    pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
 	}
-	pv->a[pv->m++] = str.s;
-
+	
 	return;
     }
 
     bcf_info_t *info = &line->d.info[i];
     if ( info->len < 0)
     {
-	kputc('1', &str);
+	kputc('1', &pv->a[pv->m++]);
 	if (pv->n == pv->m)
 	{
 	    pv->n+= 2;
-	    pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	    pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
 	}
-	pv->a[pv->m++] = str.s;
-
 	return;
     }
 
@@ -520,71 +542,61 @@ static void process_info(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t
     {
 	switch (info->type)
 	{
-	case BCF_BT_INT8: if ( info->v1.i==bcf_int8_missing ) kputc('.', &str); else kputw(info->v1.i, &str); break;
-	case BCF_BT_INT16: if ( info->v1.i==bcf_int16_missing ) kputc('.', &str); else kputw(info->v1.i, &str); break;
-	case BCF_BT_INT32: if ( info->v1.i==bcf_int32_missing ) kputc('.', &str); else kputw(info->v1.i, &str); break;
-	case BCF_BT_FLOAT: if ( bcf_float_is_missing(info->v1.f) ) kputc('.', &str); else ksprintf(&str, "%g", info->v1.f); break;
-	case BCF_BT_CHAR: kputc(info->v1.i, &str); break;
+	case BCF_BT_INT8: if ( info->v1.i==bcf_int8_missing ) kputc('.', &pv->a[pv->m++]); else kputw(info->v1.i, &pv->a[pv->m]); break;
+	case BCF_BT_INT16: if ( info->v1.i==bcf_int16_missing ) kputc('.', &pv->a[pv->m++]); else kputw(info->v1.i, &pv->a[pv->m]); break;
+	case BCF_BT_INT32: if ( info->v1.i==bcf_int32_missing ) kputc('.', &pv->a[pv->m++]); else kputw(info->v1.i, &pv->a[pv->m]); break;
+	case BCF_BT_FLOAT: if ( bcf_float_is_missing(info->v1.f) ) kputc('.', &pv->a[pv->m++]); else ksprintf(&pv->a[pv->m], "%g", info->v1.f); break;
+	case BCF_BT_CHAR: kputc(info->v1.i, &pv->a[pv->m]); break;
 	default: fprintf(stderr,"todo: type %d\n", info->type); exit(1); break;
 	}
     }
     else
-	bcf_fmt_array(&str, info->len, info->type, info->vptr);
+	bcf_fmt_array(&pv->a[pv->m], info->len, info->type, info->vptr);
+    pv->m++;
     if (pv->n == pv->m)
     {
 	pv->n+= 2;
-	pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
-    pv->a[pv->m++] = str.s;
-
 }
 static void process_format(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
-    kstring_t str = { 0, 0, 0};
     mval_t *pv= &tag->trans[tag->m][tag->n];
     pv->type = fmt->type;
 
-    if ( fmt->fmt == NULL ) kputc('.', &str);
+    if ( fmt->fmt == NULL ) kputc('.', &pv->a[pv->m++]);
     else
-	bcf_fmt_array(&str, fmt->fmt->n, fmt->fmt->type, fmt->fmt->p + isample*fmt->fmt->size);
+	bcf_fmt_array(&pv->a[pv->m++], fmt->fmt->n, fmt->fmt->type, fmt->fmt->p + isample*fmt->fmt->size);
     if (pv->n == pv->m)
     {
 	pv->n+= 2;
-	pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
-    pv->a[pv->m++] = str.s;
-
 
 }
 static void process_sample(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
     assert(isample > -1);
-    kstring_t str = { 0, 0, 0};
     mval_t *pv= &tag->trans[tag->m][tag->n];
     pv->type = fmt->type;
-    kputs(header->samples[isample], &str);
-        if (pv->n == pv->m)
+    kputs(header->samples[isample], &pv->a[pv->m++]);
+    if (pv->n == pv->m)
     {
 	pv->n+= 2;
-	pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
-    pv->a[pv->m++] = str.s;
-
 }
 static void process_sep(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
     if (!fmt->key) error("FIXME: This is an empty fmt\n");
-    kstring_t str = { 0, 0, 0 };
     mval_t *pv= &tag->trans[tag->m][tag->n];
     pv->type = fmt->type;
-    kputs(fmt->key,&str);
+    kputs(fmt->key,&pv->a[pv->m++]);
     if (pv->n == pv->m)
     {
 	pv->n+= 2;
-	pv->a = (char**)realloc(pv->a, pv->n*sizeof(char*));
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
-    pv->a[pv->m++] = str.s;
-
 }
 
 /* The register_tag and parse_tag functions are adapted from pd3's convert.c 
@@ -624,20 +636,20 @@ fmt_t *register_tag(int type, char *key, int is_gtf)
 	    else if ( !strcmp("SAMPLE", key) ) fmt->type = S_SAMPLE;
 	    else  error("No such tag in the header %d\n", key);
     	}
-	else
-	{
-	    if ( !strcmp("HGVS", key) ) fmt->type = S_TRANS;
-	    else if ( !strcmp("SAMPLE", key) ) fmt->type = S_SAMPLE;
-	    else if ( fmt->id >= 0 && bcf_hdr_idinfo_exists(header, BCF_HL_INFO, fmt->id) )
-	    {
-    		fmt->type = S_INFO;
-    		fprintf(stderr, "Warning: Assuming INFO %s\n", key);
-    	    }
-	    else
-	    {
-		fmt->type = S_FORMAT;
-	    }
-	}
+	/* else */
+	/* { */
+	/*     if ( !strcmp("HGVS", key) ) fmt->type = S_TRANS; */
+	/*     else if ( !strcmp("SAMPLE", key) ) fmt->type = S_SAMPLE; */
+	/*     else if ( fmt->id >= 0 && bcf_hdr_idinfo_exists(header, BCF_HL_INFO, fmt->id) ) */
+	/*     { */
+    	/* 	fmt->type = S_INFO; */
+    	/* 	fprintf(stderr, "Warning: Assuming INFO %s\n", key); */
+    	/*     } */
+	/*     else */
+	/*     { */
+	/* 	fmt->type = S_FORMAT; */
+	/*     } */
+	/*}*/
     }
     switch ( fmt->type )
     {
@@ -656,7 +668,7 @@ fmt_t *register_tag(int type, char *key, int is_gtf)
     case S_SAMPLE: fmt->handler = &process_sample; break;
     case S_SEP: fmt->handler = &process_sep; break;
     case S_TGT: fmt->handler = &process_tgt; convert->max_unpack |= BCF_UN_FMT; break;
-    default: error("TODO: handler for type %d\n", fmt->type);
+    default: error("Todo: Handler For Type %d\n", fmt->type);
     }
     /* if ( key ) */
     /* { */
@@ -698,6 +710,8 @@ static char *parse_tag(char *p, int is_gtf)
 	else if ( !strcmp(str.s, "REF") ) register_tag(S_REF, "REF", is_gtf);
 	else if ( !strcmp(str.s, "ALT") ) register_tag(S_ALT, "ALT", is_gtf);
 	else if ( !strcmp(str.s, "HGVS") ) register_tag(S_TRANS, "HGVS", is_gtf);
+	else if ( !strcmp(str.s, "GT") || !strcmp(str.s, "TGT")) { split_flag |= SPLIT_SAMPLE; register_tag(S_TGT, "GT", is_gtf); }
+	else if ( !strcmp(str.s, "IUPACGT") ) { split_flag |= SPLIT_SAMPLE; register_tag(S_IUPAC_GT, "GT", is_gtf); }
 	else if ( !strcmp(str.s, "FUNC") ) register_tag(S_TRANS, "FUNC", is_gtf);
 	else if ( !strcmp(str.s, "SAMPLE") ) { split_flag |= SPLIT_SAMPLE; register_tag(S_SAMPLE, "SAMPLE", is_gtf); }
 	else if ( !strcmp(str.s, "FIRST_ALT") ) register_tag(S_FIRST_ALT, "FIRST_ALT", is_gtf);
@@ -788,54 +802,179 @@ const char *usage(void)
 
 kstring_t *mempool = NULL;
 
-int init(int argc, char **argv, bcf_hdr_t *in, bcf_hdr_t *out)
+/* int init(int argc, char **argv, bcf_hdr_t *in, bcf_hdr_t *out) */
+/* { */
+/*     static struct option const long_opts[] = */
+/* 	{ */
+/* 	    {"format", required_argument, NULL, 'f'}, */
+/* 	    {"skip-ref", no_argument, NULL, 'r'}, */
+/* 	    {"split", required_argument, NULL, 's'}, */
+/* 	    {"print-header", no_argument, NULL, 'p'}, */
+/* 	    {0, 0, 0, 0} */
+/* 	}; */
+/*     char c; */
+/*     char *format = NULL; */
+/*     char *flag = NULL; */
+/*     header = in; */
+/*     while ((c = getopt_long(argc, argv, "f:s:ph?", long_opts, NULL)) >= 0) */
+/*     { */
+/* 	switch (c) */
+/* 	{ */
+/* 	case 'f': format = strdup(optarg); break; */
+/* 	case 'r': skip_ref = 1; break; */
+/* 	case 's': flag = strdup(optarg); break; */
+/* 	case 'p': print_header = 1; break; */
+/* 	case 'h': */
+/* 	case '?': */
+/* 	default: fprintf(stderr, "%s", usage()); break; */
+/* 	} */
+/*     } */
+/*     if (flag) */
+/*     { */
+/* 	split_flag = init_split_flag(flag); */
+/* 	free(flag); */
+/*     } */
+/*     if (format) */
+/*     { */
+/* 	convert_init(format); */
+/* 	free(format); */
+/*     } */
+/*     else */
+/*     { */
+/* 	error("%s", usage()); */
+/*     } */
+/*     mempool = (kstring_t*)malloc(sizeof(kstring_t)); */
+/*     mempool->m = mempool->l = 0; */
+/*     tag = (tags_t*)malloc(sizeof(tags_t)); */
+/*     tag->l = tag->k = 0; */
+/*     if (print_header) convert_header(mempool); */
+/*     return 1; */
+/* } */
+
+
+/* bcf1_t *process(bcf1_t *rec) */
+/* { */
+/*     convert_line(rec, mempool); */
+/*     fprintf(stdout, "%s", mempool->s); */
+/*     mempool->l = 0; */
+/*     return 0; */
+/* } */
+
+/* void destroy(void) */
+/* { */
+/*     destroy_tag(tag); */
+/*     if (mempool->m) free(mempool->s); */
+/*     free(mempool); */
+/* } */
+
+
+int run(int argc, char**argv)
 {
-    static struct option const long_opts[] =
+    struct option const long_opts[] =
 	{
 	    {"format", required_argument, NULL, 'f'},
 	    {"skip-ref", no_argument, NULL, 'r'},
 	    {"split", required_argument, NULL, 's'},
+	    {"print-header", no_argument, NULL, 'p'},
 	    {0, 0, 0, 0}
 	};
     char c;
-    char * format = NULL;
-    while ((c = getopt_long(argc, argv, "f:sh?", long_opts, NULL)) >= 0)
+    char *format = NULL, *flag = NULL;
+    while ((c = getopt_long(argc, argv, "f:s:rph?", long_opts, NULL)) >= 0)
     {
 	switch (c)
 	{
 	case 'f': format = strdup(optarg); break;
 	case 'r': skip_ref = 1; break;
-	case 's': split_flag = init_split_flag(optarg); break;
+	case 's': flag = strdup(optarg); break;
+	case 'p': print_header = 1; break;
 	case 'h':
 	case '?':
-	default: fprintf(stderr, "%s", usage()); break;
+	default: error("%s", usage()); break;
 	}
     }
-    header = in;
-    convert_init(format);
-    free(format);
+    bcf_srs_t *sr = bcf_sr_init();
+    sr->require_index = 0;
+    /* if ( optind==argc || !strcmp(argv[optind],"-")) */
+    /* { */
+    /* 	if ( !isatty(fileno((FILE*)stdin)) ) fname = "-"; */
+    /* 	else error("%s", usage()); */
+    /* } */
+    /* else */
+    /* { */
+    /* 	fname = argv[optind]; */
+    /* } */
+    /* if ( !bcf_sr_add_reader(sr, fname) ) error("Failed to open %s : %s\n", fname, bcf_sr_strerror(sr->errnum)); */
+    if (!argv[0]) error("%s", usage());
+    if (!bcf_sr_add_reader(sr, argv[0])) error("Failed to open %s : %s\n", argv[optind], bcf_sr_strerror(sr->errnum));
+    header = sr->readers[0].header;
+
+    if (flag)
+    {
+	split_flag = init_split_flag(flag);
+	free(flag);
+    }
+    if (format)
+    {
+	convert_init(format);
+	free(format);
+    }
+    else
+    {
+	error("Must set a format string with -f \n");
+    }
+    
     mempool = (kstring_t*)malloc(sizeof(kstring_t));
     mempool->m = mempool->l = 0;
-    print_header = 1;
+    mempool->s = NULL;
+
+    tag = (tags_t*)malloc(sizeof(tags_t));
+    tag->l = tag->k = 0;
+
+    if (print_header) convert_header(mempool);
+
+    while (bcf_sr_next_line(sr))
+    {
+	bcf1_t *line = bcf_sr_get_line(sr, 0);
+	convert_line(line, mempool);
+	if (mempool->l > MEMPOOL)
+	{
+	    fprintf(stdout, "%s", mempool->s);
+	    mempool->l = 0;
+	}
+    }
+    if (mempool->l) { fprintf(stdout, "%s", mempool->s); mempool->l = 0; }
+    bcf_sr_destroy(sr);
+    destroy_tag(tag);
+    if (mempool->m) free(mempool->s);
+    free(mempool);
     return 0;
 }
 
 
-bcf1_t *process(bcf1_t *rec)
-{
-    convert_line(rec, mempool);
-    //fprintf(stderr, "%s\n", mempool->s);
-    mempool->l = 0;
-    return 0;
-}
-
-void destroy(void)
-{
-}
 #ifdef _SELECT_MAIN
-
 int main(int argc, char **argv)
 {
-    return run(argc, argv);
+    return run(argc-1, argv+1);
 }
+#endif
+
+#ifndef BCFTOOLS_VERSION
+#define BCFTOOLS_VERSION "1.2"
+
+static void version(const char **bcftools_version, const char **htslib_version)
+{
+    *bcftools_version = BCFTOOLS_VERSION;
+    *htslib_version = hts_version();
+}
+
+static void error(const char *format, ...)
+{
+    va_list ap;
+    va_start(ap, format);
+    vfprintf(stderr, format, ap);
+    va_end(ap);
+    exit(-1);
+}
+
 #endif
