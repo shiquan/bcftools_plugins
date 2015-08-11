@@ -224,7 +224,15 @@ int convert_header(kstring_t *str)
 	    continue;
 	}
 	// Fixed fields
-	if ( convert->fmt[i].key ) kputs(convert->fmt[i].key, str);
+	if ( convert->fmt[i].key )
+	{
+	    if (!strcmp(convert->fmt[i].key, "BED"))
+	    {
+		kputs("CHROM\tSTART\tSTOP", str);
+	    }
+	    else
+		kputs(convert->fmt[i].key, str);
+	}
     }
     return str->l - l_ori;
 }
@@ -255,11 +263,14 @@ void init_tags(tags_t *t, bcf1_t *const line)
     }
     for (i=0; i<convert->nfmt; ++i)
     {
-    	if (convert->fmt[i].id == -1) continue;
-    	for (j=0; j<(int)line->n_fmt; j++)
-    	{
-    	    if ( line->d.fmt[j].id==convert->fmt[i].id ) { convert->fmt[i].fmt = &line->d.fmt[j]; break; }
-    	}
+    	//if (convert->fmt[i].id == -1) continue;
+	if ( convert->fmt[i].type == S_FORMAT)
+	{
+	    for (j=0; j<(int)line->n_fmt; j++)
+	    {
+		if ( line->d.fmt[j].id==convert->fmt[i].id ) { convert->fmt[i].fmt = &line->d.fmt[j]; break; }
+	    }
+	}
     }
     t->m = t->n = -1;
 }
@@ -421,6 +432,14 @@ static void process_ref(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t 
 }
 static void process_id(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
+    mval_t *pv= &tag->trans[tag->m][tag->n];
+    kputs(line->d.id, &pv->a[pv->m++]);
+    pv->type = fmt->type;
+    if (pv->n == pv->m)
+    {
+	pv->n+= 2;
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
+    }
 }
 static void process_alt(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
@@ -506,6 +525,12 @@ static void process_tgt(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t 
 }
 static void process_trans(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
+    mval_t *pv= &tag->trans[tag->m][tag->n];
+    if ( fmt->fmt==NULL ) kputc('.', &pv->a[pv->m]);
+    else if (split_flag & SPLIT_ALT)
+    {
+	
+    }
 }
 static void process_info(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
 {
