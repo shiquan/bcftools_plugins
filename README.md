@@ -26,7 +26,7 @@ Here is a demo of different format string of bcftools query and select:
 
 ``` 
 bcftools query  -f '%CHROM\t%POS\t%REF\t%ALT[\t%SAMPLE=%GT]\n' file.vcf.gz
-bcftools +select -f  -f '%BED\t%SAMPLE\t%REF\t%ALT\n' file.vcf.gz
+bcftools +select -f '%BED\t%SAMPLE\t%REF\t%ALT\n' file.vcf.gz
 ```
 
 
