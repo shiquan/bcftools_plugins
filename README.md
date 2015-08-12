@@ -1,10 +1,10 @@
-# To whom may concern
+# To whom it may concern
 
 This repo is a collection of bcftools plugins. By the time  I write all these plugins, I am working at BGI research as a bioinformatician. Thanks to HTSlib, bcftools has become much more flexible and robust than ever before. I am happy to write plugins to extent the features of bcftools and meanwhile I can manage my daily jobs by bcftools and these plugins. I would love to share all my codes with people who may need them. Please let me know if you have any problems when you try to use these plugins.
 
 
 
-# Introduce of these plugins
+# Introduce to these plugins
 
 Here is the brief introduction, try to enter each folder for details. Some folders may be empty, I will add the detailed manuals for them soon.
 
@@ -45,8 +45,6 @@ There are three different ways to compiles these plugins.
 
 3)  git clone https://github.com/shiquan/bcftools_plugins.git
 
-   git clone https://github.com/shiquan/bcftools_plugins.git
-
 4) mv bcftools_plugins/\*/\*.c  plugins/
 
 5) make
@@ -69,6 +67,6 @@ Note: htslib should be installed in your system and the version of bcftools and 
 
 ### Third way, compile the plugin into a standalone program, ***perhaps the simplest way***.
 
-you should try to compile it with  `make` or by hand
+you should try to compile it with  `make` in each folder, or compiler it from scratch, here is an example.
 
 `gcc -g -O2 -Ihtslib_include -D_SELECT_MAIN -o bcfselect plugins/select.c -Lhtslib_dir -lhts`
