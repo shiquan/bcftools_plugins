@@ -573,8 +573,19 @@ static void process_info(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t
     assert( iala>=0 );
     if ( type==BCF_VL_A || type==BCF_VL_R )
     {
+	
 	if ( iala==0 && type==BCF_VL_A ) { kputc('.', &pv->a[pv->m]); goto enlar; }
 	int j;
+	int type = bcf_hdr_id2type(header, BCF_HL_INFO, fmt->id);
+	if ( type==BCF_HL_STR )
+	{
+	    assert(info->type==BCF_BT_CHAR);
+	    char *data = (char*)info->vptr;
+	    for (j=0; j<info->len && data[j]!=bcf_str_missing; ++j);
+	    kputsn(data, j, &pv->a[pv->m]);
+	    goto enlar;
+	}
+
 	j = type==BCF_VL_A ? iala-1 : iala ;
 #define BRANCH(type_t, is_missing, is_vector_end, kprint) { \
 	    type_t *p = (type_t*)info->vptr; \
@@ -661,348 +672,348 @@ static void process_sample(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags
 	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
 }
-    static void process_sep(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
+static void process_sep(bcf1_t *line, fmt_t *fmt, int iala, int isample, tags_t *tag)
+{
+    if (!fmt->key) error("FIXME: This is an empty fmt\n");
+    mval_t *pv= &tag->trans[tag->m][tag->n];
+    pv->type = fmt->type;
+    kputs(fmt->key,&pv->a[pv->m++]);
+    if (pv->n == pv->m)
     {
-	if (!fmt->key) error("FIXME: This is an empty fmt\n");
-	mval_t *pv= &tag->trans[tag->m][tag->n];
-	pv->type = fmt->type;
-	kputs(fmt->key,&pv->a[pv->m++]);
-	if (pv->n == pv->m)
-	{
-	    pv->n+= 2;
-	    pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
-	}
+	pv->n+= 2;
+	pv->a = (kstring_t*)realloc(pv->a, pv->n*sizeof(kstring_t));
     }
+}
 
 /* The register_tag and parse_tag functions are adapted from pd3's convert.c 
  * use S-tags instead of T-tags 
  */
-    fmt_t *register_tag(int type, char *key, int is_gtf)
+fmt_t *register_tag(int type, char *key, int is_gtf)
+{
+    convert->nfmt++;
+    if (convert->nfmt == convert->mfmt)
     {
-	convert->nfmt++;
-	if (convert->nfmt == convert->mfmt)
-	{
-	    convert->mfmt += 10;
-	    convert->fmt = (fmt_t*)realloc(convert->fmt, convert->mfmt*sizeof(fmt_t));
-	}
-	fmt_t *fmt = &convert->fmt[ convert->nfmt-1 ];
-	fmt->type = type;
-	fmt->is_gtf = is_gtf;
-	fmt->key = key ? strdup(key) : NULL;
-	// allow non-format tags to appear amongst the format fields, split-samples mode
-	if ( key )
-	{
-	    fmt->id = bcf_hdr_id2int(header, BCF_DT_ID, fmt->key);
-	    if (fmt->type==S_FORMAT && !bcf_hdr_idinfo_exists(header, BCF_HL_FMT, fmt->id))
-	    {
-		if ( !strcmp("CHROM", key) ) fmt->type = S_CHROM;
-		else if ( !strcmp("POS", key) ) fmt->type = S_POS;
-		else if ( !strcmp("BED", key) ) fmt->type = S_BED;
-		else if ( !strcmp("ID", key) ) fmt->type = S_ID;
-		else if ( !strcmp("REF", key) ) fmt->type = S_REF;
-		else if ( !strcmp("ALT", key) ) fmt->type = S_ALT;
-		else if ( !strcmp("FIRST_ALT", key) ) fmt->type = S_FIRST_ALT;
-		else if ( !strcmp("QUAL", key) ) fmt->type = S_QUAL;
-		else if ( !strcmp("FILTER", key) ) fmt->type = S_FILTER;
-		else if ( !strcmp("SAMPLE", key) ) fmt->type = S_SAMPLE;
-		else if ( !strcmp("HGVS", key) ) fmt->type = S_TRANS;
-		else if ( fmt->id>=0 && bcf_hdr_idinfo_exists(header, BCF_HL_INFO, fmt->id))
-		{
-		    fmt->type = S_INFO;
-		}
-	    }
-	}
-	/* if (fmt->type == S_SEP) */
-	/* { */
-	/* 	fmt->id = -1; */
-	/* } */
-	/* else */
-	/* { */
-	/* 	fmt->id = bcf_hdr_id2int(header, BCF_DT_ID, fmt->key); */
-	/* 	if ( fmt->id == -1 && !fmt->is_gtf) */
-	/* 	{ */
-	/* 	    if ( !strcmp("CHROM", key) ) fmt->type = S_CHROM; */
-	/* 	    else if ( !strcmp("POS", key) ) fmt->type = S_POS; */
-	/* 	    else if ( !strcmp("BED", key) ) fmt->type = S_BED; */
-	/* 	    else if ( !strcmp("ID", key) ) fmt->type = S_ID; */
-	/* 	    else if ( !strcmp("REF", key) ) fmt->type = S_REF; */
-	/* 	    else if ( !strcmp("ALT", key) ) fmt->type = S_ALT; */
-	/* 	    else if ( !strcmp("FIRST_ALT", key) ) fmt->type = S_FIRST_ALT; */
-	/* 	    else if ( !strcmp("QUAL", key) ) fmt->type = S_QUAL; */
-	/* 	    else if ( !strcmp("FILTER", key) ) fmt->type = S_FILTER; */
-	/* 	    else if ( !strcmp("SAMPLE", key) ) fmt->type = S_SAMPLE; */
-	/* 	    else  error("No such tag in the header %d\n", key); */
-	/* 	} */
-	/* 	/\* else *\/ */
-	/* 	/\* { *\/ */
-	/* 	/\*     if ( !strcmp("HGVS", key) ) fmt->type = S_TRANS; *\/ */
-	/* 	/\*     else if ( !strcmp("SAMPLE", key) ) fmt->type = S_SAMPLE; *\/ */
-	/* 	/\*     else if ( fmt->id >= 0 && bcf_hdr_idinfo_exists(header, BCF_HL_INFO, fmt->id) ) *\/ */
-	/* 	/\*     { *\/ */
-	/* 	/\* 	fmt->type = S_INFO; *\/ */
-	/* 	/\* 	fprintf(stderr, "Warning: Assuming INFO %s\n", key); *\/ */
-	/* 	/\*     } *\/ */
-	/* 	/\*     else *\/ */
-	/* 	/\*     { *\/ */
-	/* 	/\* 	fmt->type = S_FORMAT; *\/ */
-	/* 	/\*     } *\/ */
-	/* 	/\*}*\/ */
-	/* } */
-	switch ( fmt->type )
-	{
-	case S_FIRST_ALT: fmt->handler = &process_first_alt; break;
-	case S_CHROM: fmt->handler = &process_chrom; break;
-	case S_POS: fmt->handler = &process_pos; break;
-	case S_BED: fmt->handler = &process_bed; break;
-	case S_ID: fmt->handler = &process_id; break;
-	case S_REF: fmt->handler = &process_ref; break;
-	case S_ALT: fmt->handler = &process_alt; break;
-	case S_QUAL: fmt->handler = &process_qual; break;
-	case S_FILTER: fmt->handler = &process_filter; convert->max_unpack |= BCF_UN_FLT; break;
-	case S_INFO: fmt->handler = &process_info; convert->max_unpack |= BCF_UN_INFO; break;	
-	case S_TRANS: fmt->handler = &process_trans; convert->max_unpack |= BCF_UN_INFO; break;
-	case S_FORMAT: fmt->handler = &process_format; convert->max_unpack |= BCF_UN_FMT; break;
-	case S_SAMPLE: fmt->handler = &process_sample; break;
-	case S_SEP: fmt->handler = &process_sep; break;
-	case S_TGT: fmt->handler = &process_tgt; convert->max_unpack |= BCF_UN_FMT; break;
-	default: error("TODO: handler for type %d\n", fmt->type);
-	}
-	if ( key )
-	{
-	    if ( fmt->type==S_INFO )
-	    {
-		fmt->id = bcf_hdr_id2int(header, BCF_DT_ID, key);
-		if ( fmt->id==-1 ) error("Error: no such tag defined in the VCF header: INFO/%s\n", key);
-	    }
-	}
-	return fmt;
+	convert->mfmt += 10;
+	convert->fmt = (fmt_t*)realloc(convert->fmt, convert->mfmt*sizeof(fmt_t));
     }
-    static char *parse_tag(char *p, int is_gtf)
+    fmt_t *fmt = &convert->fmt[ convert->nfmt-1 ];
+    fmt->type = type;
+    fmt->is_gtf = is_gtf;
+    fmt->key = key ? strdup(key) : NULL;
+    // allow non-format tags to appear amongst the format fields, split-samples mode
+    if ( key )
     {
-	char *q = ++p;
-	while ( *q && (isalnum(*q) || *q=='_' || *q=='.')) q++;
-	kstring_t str = {0,0,0};
-	if ( q-p==0 ) error("Could not parse format string: %s\n", convert->format_str);
-	kputsn(p, q-p, &str);
-	if ( is_gtf )
+	fmt->id = bcf_hdr_id2int(header, BCF_DT_ID, fmt->key);
+	if (fmt->type==S_FORMAT && !bcf_hdr_idinfo_exists(header, BCF_HL_FMT, fmt->id))
 	{
-	    if ( !strcmp(str.s, "SAMPLE") ) register_tag(S_SAMPLE, "SAMPLE", is_gtf);
-	    else if ( !strcmp(str.s, "GT") || !strcmp(str.s, "TGT")) register_tag(S_TGT, "GT", is_gtf);
-	    else if ( !strcmp(str.s, "IUPACGT") ) register_tag(S_IUPAC_GT, "GT", is_gtf);
-	    else
+	    if ( !strcmp("CHROM", key) ) fmt->type = S_CHROM;
+	    else if ( !strcmp("POS", key) ) fmt->type = S_POS;
+	    else if ( !strcmp("BED", key) ) fmt->type = S_BED;
+	    else if ( !strcmp("ID", key) ) fmt->type = S_ID;
+	    else if ( !strcmp("REF", key) ) fmt->type = S_REF;
+	    else if ( !strcmp("ALT", key) ) fmt->type = S_ALT;
+	    else if ( !strcmp("FIRST_ALT", key) ) fmt->type = S_FIRST_ALT;
+	    else if ( !strcmp("QUAL", key) ) fmt->type = S_QUAL;
+	    else if ( !strcmp("FILTER", key) ) fmt->type = S_FILTER;
+	    else if ( !strcmp("SAMPLE", key) ) fmt->type = S_SAMPLE;
+	    else if ( !strcmp("HGVS", key) ) fmt->type = S_TRANS;
+	    else if ( fmt->id>=0 && bcf_hdr_idinfo_exists(header, BCF_HL_INFO, fmt->id))
 	    {
-		register_tag(S_FORMAT, str.s, is_gtf);
+		fmt->type = S_INFO;
 	    }
+	}
+    }
+    /* if (fmt->type == S_SEP) */
+    /* { */
+    /* 	fmt->id = -1; */
+    /* } */
+    /* else */
+    /* { */
+    /* 	fmt->id = bcf_hdr_id2int(header, BCF_DT_ID, fmt->key); */
+    /* 	if ( fmt->id == -1 && !fmt->is_gtf) */
+    /* 	{ */
+    /* 	    if ( !strcmp("CHROM", key) ) fmt->type = S_CHROM; */
+    /* 	    else if ( !strcmp("POS", key) ) fmt->type = S_POS; */
+    /* 	    else if ( !strcmp("BED", key) ) fmt->type = S_BED; */
+    /* 	    else if ( !strcmp("ID", key) ) fmt->type = S_ID; */
+    /* 	    else if ( !strcmp("REF", key) ) fmt->type = S_REF; */
+    /* 	    else if ( !strcmp("ALT", key) ) fmt->type = S_ALT; */
+    /* 	    else if ( !strcmp("FIRST_ALT", key) ) fmt->type = S_FIRST_ALT; */
+    /* 	    else if ( !strcmp("QUAL", key) ) fmt->type = S_QUAL; */
+    /* 	    else if ( !strcmp("FILTER", key) ) fmt->type = S_FILTER; */
+    /* 	    else if ( !strcmp("SAMPLE", key) ) fmt->type = S_SAMPLE; */
+    /* 	    else  error("No such tag in the header %d\n", key); */
+    /* 	} */
+    /* 	/\* else *\/ */
+    /* 	/\* { *\/ */
+    /* 	/\*     if ( !strcmp("HGVS", key) ) fmt->type = S_TRANS; *\/ */
+    /* 	/\*     else if ( !strcmp("SAMPLE", key) ) fmt->type = S_SAMPLE; *\/ */
+    /* 	/\*     else if ( fmt->id >= 0 && bcf_hdr_idinfo_exists(header, BCF_HL_INFO, fmt->id) ) *\/ */
+    /* 	/\*     { *\/ */
+    /* 	/\* 	fmt->type = S_INFO; *\/ */
+    /* 	/\* 	fprintf(stderr, "Warning: Assuming INFO %s\n", key); *\/ */
+    /* 	/\*     } *\/ */
+    /* 	/\*     else *\/ */
+    /* 	/\*     { *\/ */
+    /* 	/\* 	fmt->type = S_FORMAT; *\/ */
+    /* 	/\*     } *\/ */
+    /* 	/\*}*\/ */
+    /* } */
+    switch ( fmt->type )
+    {
+    case S_FIRST_ALT: fmt->handler = &process_first_alt; break;
+    case S_CHROM: fmt->handler = &process_chrom; break;
+    case S_POS: fmt->handler = &process_pos; break;
+    case S_BED: fmt->handler = &process_bed; break;
+    case S_ID: fmt->handler = &process_id; break;
+    case S_REF: fmt->handler = &process_ref; break;
+    case S_ALT: fmt->handler = &process_alt; break;
+    case S_QUAL: fmt->handler = &process_qual; break;
+    case S_FILTER: fmt->handler = &process_filter; convert->max_unpack |= BCF_UN_FLT; break;
+    case S_INFO: fmt->handler = &process_info; convert->max_unpack |= BCF_UN_INFO; break;	
+    case S_TRANS: fmt->handler = &process_trans; convert->max_unpack |= BCF_UN_INFO; break;
+    case S_FORMAT: fmt->handler = &process_format; convert->max_unpack |= BCF_UN_FMT; break;
+    case S_SAMPLE: fmt->handler = &process_sample; break;
+    case S_SEP: fmt->handler = &process_sep; break;
+    case S_TGT: fmt->handler = &process_tgt; convert->max_unpack |= BCF_UN_FMT; break;
+    default: error("TODO: handler for type %d\n", fmt->type);
+    }
+    if ( key )
+    {
+	if ( fmt->type==S_INFO )
+	{
+	    fmt->id = bcf_hdr_id2int(header, BCF_DT_ID, key);
+	    if ( fmt->id==-1 ) error("Error: no such tag defined in the VCF header: INFO/%s\n", key);
+	}
+    }
+    return fmt;
+}
+static char *parse_tag(char *p, int is_gtf)
+{
+    char *q = ++p;
+    while ( *q && (isalnum(*q) || *q=='_' || *q=='.')) q++;
+    kstring_t str = {0,0,0};
+    if ( q-p==0 ) error("Could not parse format string: %s\n", convert->format_str);
+    kputsn(p, q-p, &str);
+    if ( is_gtf )
+    {
+	if ( !strcmp(str.s, "SAMPLE") ) register_tag(S_SAMPLE, "SAMPLE", is_gtf);
+	else if ( !strcmp(str.s, "GT") || !strcmp(str.s, "TGT")) register_tag(S_TGT, "GT", is_gtf);
+	else if ( !strcmp(str.s, "IUPACGT") ) register_tag(S_IUPAC_GT, "GT", is_gtf);
+	else
+	{
+	    register_tag(S_FORMAT, str.s, is_gtf);
+	}
+    }
+    else
+    {
+	if ( !strcmp(str.s, "CHROM") ) register_tag(S_CHROM, "CHROM", is_gtf);
+	else if ( !strcmp(str.s, "POS") ) register_tag(S_POS, "POS", is_gtf);
+	else if ( !strcmp(str.s, "BED") ) register_tag(S_BED, "BED", is_gtf);
+	else if ( !strcmp(str.s, "POS") ) register_tag(S_CHROM, "POS", is_gtf);
+	else if ( !strcmp(str.s, "REF") ) register_tag(S_REF, "REF", is_gtf);
+	else if ( !strcmp(str.s, "ALT") ) register_tag(S_ALT, "ALT", is_gtf);
+	else if ( !strcmp(str.s, "HGVS") ) register_tag(S_TRANS, "HGVS", is_gtf);
+	else if ( !strcmp(str.s, "GT") || !strcmp(str.s, "TGT")) { split_flag |= SPLIT_SAMPLE; register_tag(S_TGT, "GT", is_gtf); }
+	else if ( !strcmp(str.s, "IUPACGT") ) { split_flag |= SPLIT_SAMPLE; register_tag(S_IUPAC_GT, "GT", is_gtf); }
+	else if ( !strcmp(str.s, "FUNC") ) register_tag(S_TRANS, "FUNC", is_gtf);
+	else if ( !strcmp(str.s, "SAMPLE") ) { split_flag |= SPLIT_SAMPLE; register_tag(S_SAMPLE, "SAMPLE", is_gtf); }
+	else if ( !strcmp(str.s, "FIRST_ALT") ) register_tag(S_FIRST_ALT, "FIRST_ALT", is_gtf);
+	else if ( !strcmp(str.s, "QUAL") ) register_tag(S_QUAL, "QUAL", is_gtf);
+	else if ( !strcmp(str.s, "INFO") )
+	{
+	    if ( *q=='/' ) error("Could not parse format string: %s\n", convert->format_str);
+	    p = ++q;
+	    str.l = 0;
+	    while ( *q && (isalnum(*q) || *q=='_' || *q=='.') ) q++;
+	    if ( q-p==0 ) error("Could not parse format string: %s\n", convert->format_str);
+	    kputsn(p, q-p, &str);
+	    register_tag(S_INFO, str.s, is_gtf);
 	}
 	else
 	{
-	    if ( !strcmp(str.s, "CHROM") ) register_tag(S_CHROM, "CHROM", is_gtf);
-	    else if ( !strcmp(str.s, "POS") ) register_tag(S_POS, "POS", is_gtf);
-	    else if ( !strcmp(str.s, "BED") ) register_tag(S_BED, "BED", is_gtf);
-	    else if ( !strcmp(str.s, "POS") ) register_tag(S_CHROM, "POS", is_gtf);
-	    else if ( !strcmp(str.s, "REF") ) register_tag(S_REF, "REF", is_gtf);
-	    else if ( !strcmp(str.s, "ALT") ) register_tag(S_ALT, "ALT", is_gtf);
-	    else if ( !strcmp(str.s, "HGVS") ) register_tag(S_TRANS, "HGVS", is_gtf);
-	    else if ( !strcmp(str.s, "GT") || !strcmp(str.s, "TGT")) { split_flag |= SPLIT_SAMPLE; register_tag(S_TGT, "GT", is_gtf); }
-	    else if ( !strcmp(str.s, "IUPACGT") ) { split_flag |= SPLIT_SAMPLE; register_tag(S_IUPAC_GT, "GT", is_gtf); }
-	    else if ( !strcmp(str.s, "FUNC") ) register_tag(S_TRANS, "FUNC", is_gtf);
-	    else if ( !strcmp(str.s, "SAMPLE") ) { split_flag |= SPLIT_SAMPLE; register_tag(S_SAMPLE, "SAMPLE", is_gtf); }
-	    else if ( !strcmp(str.s, "FIRST_ALT") ) register_tag(S_FIRST_ALT, "FIRST_ALT", is_gtf);
-	    else if ( !strcmp(str.s, "QUAL") ) register_tag(S_QUAL, "QUAL", is_gtf);
-	    else if ( !strcmp(str.s, "INFO") )
-	    {
-		if ( *q=='/' ) error("Could not parse format string: %s\n", convert->format_str);
-		p = ++q;
-		str.l = 0;
-		while ( *q && (isalnum(*q) || *q=='_' || *q=='.') ) q++;
-		if ( q-p==0 ) error("Could not parse format string: %s\n", convert->format_str);
-		kputsn(p, q-p, &str);
-		register_tag(S_INFO, str.s, is_gtf);
-	    }
-	    else
-	    {
-		register_tag(S_INFO, str.s, is_gtf);
-	    }
+	    register_tag(S_INFO, str.s, is_gtf);
 	}
-	free(str.s);
-	return q;
     }
-    static char *parse_sep(char *p, int is_gtf)
+    free(str.s);
+    return q;
+}
+static char *parse_sep(char *p, int is_gtf)
+{
+    char *q = p;
+    kstring_t str = { 0, 0, 0};
+    while ( *q && *q!='[' && *q!=']' && *q!='%' )
     {
-	char *q = p;
-	kstring_t str = { 0, 0, 0};
-	while ( *q && *q!='[' && *q!=']' && *q!='%' )
+	if ( *q=='\\' )
 	{
-	    if ( *q=='\\' )
-	    {
-		q++;
-		if ( *q=='n' ) kputc('\n', &str);
-		else if ( *q == 't') kputc('\t', &str);
-		else kputc(*q, &str);
-	    }
-	    else kputc(*q, &str);
 	    q++;
+	    if ( *q=='n' ) kputc('\n', &str);
+	    else if ( *q == 't') kputc('\t', &str);
+	    else kputc(*q, &str);
 	}
-	if ( !str.l ) error("Could not parse format string: %s\n", convert->format_str);
-	register_tag(S_SEP, str.s, is_gtf);
-	free(str.s);
-	return q;
+	else kputc(*q, &str);
+	q++;
     }
-    void convert_init(char *s)
+    if ( !str.l ) error("Could not parse format string: %s\n", convert->format_str);
+    register_tag(S_SEP, str.s, is_gtf);
+    free(str.s);
+    return q;
+}
+void convert_init(char *s)
+{
+    convert = (convert_t*)malloc(sizeof(convert_t));
+    convert->format_str = strdup(s);
+    convert->nfmt = 0;
+    convert->mfmt = 2;
+    convert->fmt = (fmt_t*)calloc(convert->mfmt, sizeof(fmt_t)); 
+    convert->max_unpack = 0;
+    int is_gtf = 0;
+    char *p = convert->format_str;
+    while ( *p )
     {
-	convert = (convert_t*)malloc(sizeof(convert_t));
-	convert->format_str = strdup(s);
-	convert->nfmt = 0;
-	convert->mfmt = 2;
-	convert->fmt = (fmt_t*)calloc(convert->mfmt, sizeof(fmt_t)); 
-	convert->max_unpack = 0;
-	int is_gtf = 0;
-	char *p = convert->format_str;
-	while ( *p )
+	switch (*p)
 	{
-	    switch (*p)
-	    {
-	    case '[': is_gtf = 1; p++; break;
-	    case ']': is_gtf = 0; p++; break;
-	    case '%': p = parse_tag(p, is_gtf); break;
-	    default:  p = parse_sep(p, is_gtf); break;
-	    }
+	case '[': is_gtf = 1; p++; break;
+	case ']': is_gtf = 0; p++; break;
+	case '%': p = parse_tag(p, is_gtf); break;
+	default:  p = parse_sep(p, is_gtf); break;
 	}
     }
-    const char *about(void)
+}
+const char *about(void)
+{
+    return "Select tags in pre-defined format.\n";
+}
+
+const char *usage(void)
+{
+    return
+	"\n"
+	"About : Select tags from VCF/BCF file.\n"
+	"Usage:\n"
+	"Standalone mode:\n"
+	"\tbcfselect [Options] in.vcf.gz\n"
+	"Options:\n"
+	"\t-f, --format   see man page for deatils.\n"
+	"BCFtools plugin mode:\n"
+	"\tbcftools +select [General Options] -- [Plugin Options]\n"
+	"General Options:\n"
+	"\trun \"bcftools plugin\" for a list of common options.\n"
+	"Plugin Options: same with standalone mode.\n"
+	"\n"
+	"Website:\n";
+}
+
+kstring_t *mempool = NULL;
+
+
+int run(int argc, char**argv)
+{
+    struct option const long_opts[] =
+	{
+	    {"format", required_argument, NULL, 'f'},
+	    {"skip-ref", no_argument, NULL, 'r'},
+	    {"split", required_argument, NULL, 's'},
+	    {"print-header", no_argument, NULL, 'p'},
+	    {0, 0, 0, 0}
+	};
+    char c;
+    char *format = NULL, *flag = NULL;
+    while ((c = getopt_long(argc, argv, "f:s:rph?", long_opts, NULL)) >= 0)
     {
-	return "Select tags in pre-defined format.\n";
+	switch (c)
+	{
+	case 'f': format = strdup(optarg); break;
+	case 'r': skip_ref = 1; break;
+	case 's': flag = strdup(optarg); break;
+	case 'p': print_header = 1; break;
+	case 'h':
+	case '?':
+	default: error("%s", usage()); break;
+	}
     }
+    bcf_srs_t *sr = bcf_sr_init();
+    sr->require_index = 0;
+    /* if ( optind==argc || !strcmp(argv[optind],"-")) */
+    /* { */
+    /* 	if ( !isatty(fileno((FILE*)stdin)) ) fname = "-"; */
+    /* 	else error("%s", usage()); */
+    /* } */
+    /* else */
+    /* { */
+    /* 	fname = argv[optind]; */
+    /* } */
+    /* if ( !bcf_sr_add_reader(sr, fname) ) error("Failed to open %s : %s\n", fname, bcf_sr_strerror(sr->errnum)); */
+    if (!argv[0]) error("%s", usage());
+    if (!bcf_sr_add_reader(sr, argv[0])) error("Failed to open %s : %s\n", argv[optind], bcf_sr_strerror(sr->errnum));
+    header = sr->readers[0].header;
 
-    const char *usage(void)
+    if (flag)
     {
-	return
-	    "\n"
-	    "About : Select tags from VCF/BCF file.\n"
-	    "Usage:\n"
-	    "Standalone mode:\n"
-	    "\tbcfselect [Options] in.vcf.gz\n"
-	    "Options:\n"
-	    "\t-f, --format   see man page for deatils.\n"
-	    "BCFtools plugin mode:\n"
-	    "\tbcftools +select [General Options] -- [Plugin Options]\n"
-	    "General Options:\n"
-	    "\trun \"bcftools plugin\" for a list of common options.\n"
-	    "Plugin Options: same with standalone mode.\n"
-	    "\n"
-	    "Website:\n";
+	split_flag = init_split_flag(flag);
+	free(flag);
     }
-
-    kstring_t *mempool = NULL;
-
-
-    int run(int argc, char**argv)
+    if (format)
     {
-	struct option const long_opts[] =
-	    {
-		{"format", required_argument, NULL, 'f'},
-		{"skip-ref", no_argument, NULL, 'r'},
-		{"split", required_argument, NULL, 's'},
-		{"print-header", no_argument, NULL, 'p'},
-		{0, 0, 0, 0}
-	    };
-	char c;
-	char *format = NULL, *flag = NULL;
-	while ((c = getopt_long(argc, argv, "f:s:rph?", long_opts, NULL)) >= 0)
-	{
-	    switch (c)
-	    {
-	    case 'f': format = strdup(optarg); break;
-	    case 'r': skip_ref = 1; break;
-	    case 's': flag = strdup(optarg); break;
-	    case 'p': print_header = 1; break;
-	    case 'h':
-	    case '?':
-	    default: error("%s", usage()); break;
-	    }
-	}
-	bcf_srs_t *sr = bcf_sr_init();
-	sr->require_index = 0;
-	/* if ( optind==argc || !strcmp(argv[optind],"-")) */
-	/* { */
-	/* 	if ( !isatty(fileno((FILE*)stdin)) ) fname = "-"; */
-	/* 	else error("%s", usage()); */
-	/* } */
-	/* else */
-	/* { */
-	/* 	fname = argv[optind]; */
-	/* } */
-	/* if ( !bcf_sr_add_reader(sr, fname) ) error("Failed to open %s : %s\n", fname, bcf_sr_strerror(sr->errnum)); */
-	if (!argv[0]) error("%s", usage());
-	if (!bcf_sr_add_reader(sr, argv[0])) error("Failed to open %s : %s\n", argv[optind], bcf_sr_strerror(sr->errnum));
-	header = sr->readers[0].header;
-
-	if (flag)
-	{
-	    split_flag = init_split_flag(flag);
-	    free(flag);
-	}
-	if (format)
-	{
-	    convert_init(format);
-	    free(format);
-	}
-	else
-	{
-	    error("Must set a format string with -f \n");
-	}
+	convert_init(format);
+	free(format);
+    }
+    else
+    {
+	error("Must set a format string with -f \n");
+    }
     
-	mempool = (kstring_t*)malloc(sizeof(kstring_t));
-	mempool->m = mempool->l = 0;
-	mempool->s = NULL;
+    mempool = (kstring_t*)malloc(sizeof(kstring_t));
+    mempool->m = mempool->l = 0;
+    mempool->s = NULL;
 
-	tag = (tags_t*)malloc(sizeof(tags_t));
-	tag->l = tag->k = 0;
+    tag = (tags_t*)malloc(sizeof(tags_t));
+    tag->l = tag->k = 0;
 
-	if (print_header) convert_header(mempool);
+    if (print_header) convert_header(mempool);
 
-	while (bcf_sr_next_line(sr))
+    while (bcf_sr_next_line(sr))
+    {
+	bcf1_t *line = bcf_sr_get_line(sr, 0);
+	convert_line(line, mempool);
+	if (mempool->l > MEMPOOL)
 	{
-	    bcf1_t *line = bcf_sr_get_line(sr, 0);
-	    convert_line(line, mempool);
-	    if (mempool->l > MEMPOOL)
-	    {
-		fprintf(stdout, "%s", mempool->s);
-		mempool->l = 0;
-	    }
+	    fprintf(stdout, "%s", mempool->s);
+	    mempool->l = 0;
 	}
-	if (mempool->l) { fprintf(stdout, "%s", mempool->s); mempool->l = 0; }
-	bcf_sr_destroy(sr);
-	destroy_tag(tag);
-	if (mempool->m) free(mempool->s);
-	free(mempool);
-	return 0;
     }
+    if (mempool->l) { fprintf(stdout, "%s", mempool->s); mempool->l = 0; }
+    bcf_sr_destroy(sr);
+    destroy_tag(tag);
+    if (mempool->m) free(mempool->s);
+    free(mempool);
+    return 0;
+}
 
 
 #ifdef _SELECT_MAIN
-    int main(int argc, char **argv)
-    {
-	return run(argc-1, argv+1);
-    }
+int main(int argc, char **argv)
+{
+    return run(argc-1, argv+1);
+}
 #endif
 
 #ifndef BCFTOOLS_VERSION
 #define BCFTOOLS_VERSION "1.2"
 
-    static void version(const char **bcftools_version, const char **htslib_version)
-    {
-	*bcftools_version = BCFTOOLS_VERSION;
-	*htslib_version = hts_version();
-    }
+static void version(const char **bcftools_version, const char **htslib_version)
+{
+    *bcftools_version = BCFTOOLS_VERSION;
+    *htslib_version = hts_version();
+}
 
-    static void error(const char *format, ...)
-    {
-	va_list ap;
-	va_start(ap, format);
-	vfprintf(stderr, format, ap);
-	va_end(ap);
-	exit(-1);
-    }
+static void error(const char *format, ...)
+{
+    va_list ap;
+    va_start(ap, format);
+    vfprintf(stderr, format, ap);
+    va_end(ap);
+    exit(-1);
+}
 
 #endif
