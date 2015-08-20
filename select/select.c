@@ -895,6 +895,8 @@ const char *usage(void)
 	"\tbcfselect [Options] in.vcf.gz\n"
 	"Options:\n"
 	"\t-f, --format   see man page for deatils.\n"
+	"\t-s, --split    split by [ALT,SAMPLE,TRANS].\n"
+	"\t-p, --print-header  print the header comment.\n"
 	"BCFtools plugin mode:\n"
 	"\tbcftools +select [General Options] -- [Plugin Options]\n"
 	"General Options:\n"
